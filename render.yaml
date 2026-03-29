@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: tradelab
+    runtime: node
+    plan: free
+    buildCommand: VITE_SUPABASE_URL="$SUPABASE_URL" VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY="$SUPABASE_ANON_KEY" npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_MAX
+        value: "120"
+      - key: ALLOW_UNVERIFIED_RPC_READY
+        value: "false"
