@@ -11,6 +11,19 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.resolve(__dirname, "../dist");
+const PORT = Number(process.env.PORT ?? 3000);
+const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY =
+  process.env.SUPABASE_ANON_KEY ??
+  process.env.VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+const supabaseOrigin = (() => {
+  if (!SUPABASE_URL) return null;
+  try {
+    return new URL(SUPABASE_URL).origin;
+  } catch {
+    return null;
+  }
+})();
 
 const isProduction = process.env.NODE_ENV === "production";
 const corsOrigins = (
@@ -22,7 +35,42 @@ const corsOrigins = (
   .filter(Boolean);
 const allowAnyOrigin = corsOrigins.includes("*");
 
-app.use(helmet());
+const connectSrc = [
+  "'self'",
+  "https://api.binance.com",
+  "https://*.supabase.co",
+  "wss://*.supabase.co",
+  "https://*.tradingview.com",
+  "wss://*.tradingview.com",
+  "https://s3.tradingview.com",
+];
+if (supabaseOrigin) {
+  connectSrc.push(supabaseOrigin);
+}
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "https://s3.tradingview.com",
+          "https://*.tradingview.com",
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'", "https:"],
+        imgSrc: ["'self'", "data:", "https:"],
+        fontSrc: ["'self'", "data:", "https:"],
+        connectSrc,
+        frameSrc: ["'self'", "https://*.tradingview.com"],
+      },
+    },
+  }),
+);
 app.use(
   cors({
     origin(origin, callback) {
@@ -43,12 +91,6 @@ app.use(
     legacyHeaders: false,
   }),
 );
-
-const PORT = Number(process.env.PORT ?? 3000);
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY =
-  process.env.SUPABASE_ANON_KEY ??
-  process.env.VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error(
@@ -150,7 +192,13 @@ async function getLatestPrice() {
       };
       return priceCache;
     }
-    throw error;
+
+    priceCache = {
+      value: STARTING_PRICE,
+      source: "fallback",
+      updatedAt: new Date().toISOString(),
+    };
+    return priceCache;
   }
 
   return priceCache;
@@ -324,13 +372,22 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.get("/api/market/price", async (_req, res) => {
-  const price = await getLatestPrice();
-  res.json({
-    symbol: "BTCUSDT",
-    price: price.value,
-    source: price.source,
-    updated_at: price.updatedAt,
-  });
+  try {
+    const price = await getLatestPrice();
+    return res.json({
+      symbol: "BTCUSDT",
+      price: price.value,
+      source: price.source,
+      updated_at: price.updatedAt,
+    });
+  } catch (error) {
+    return res.status(503).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Market price temporarily unavailable",
+    });
+  }
 });
 
 app.get("/api/readiness", async (_req, res) => {
