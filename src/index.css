@@ -47,6 +47,8 @@ input {
   max-width: 540px;
   display: grid;
   gap: 16px;
+  min-height: 100vh;
+  align-content: center;
 }
 
 .dashboard-shell {
@@ -82,6 +84,10 @@ input {
   border: 1px solid #ffceb8;
   border-radius: 12px;
   padding: 10px 12px;
+}
+
+.auth-feedback {
+  margin-top: 8px;
 }
 
 .grid {
@@ -260,5 +266,10 @@ input {
 
   .tv-wrapper {
     height: 360px;
+  }
+
+  .auth-shell {
+    min-height: auto;
+    padding-top: 8px;
   }
 }

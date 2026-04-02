@@ -238,6 +238,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [authMessage, setAuthMessage] = useState<string | null>(null);
 
   const [storageMode, setStorageMode] = useState<StorageMode>("api");
@@ -527,6 +528,11 @@ export default function App() {
 
     try {
       if (authMode === "signup") {
+        if (password !== confirmPassword) {
+          setAuthMessage("Passwords do not match.");
+          return;
+        }
+
         const { data, error } = await client.auth.signUp({ email, password });
         if (error) throw error;
 
@@ -718,14 +724,20 @@ export default function App() {
           <div className="auth-mode-row">
             <button
               className={authMode === "signin" ? "active" : ""}
-              onClick={() => setAuthMode("signin")}
+              onClick={() => {
+                setAuthMode("signin");
+                setAuthMessage(null);
+              }}
               type="button"
             >
               Sign in
             </button>
             <button
               className={authMode === "signup" ? "active" : ""}
-              onClick={() => setAuthMode("signup")}
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthMessage(null);
+              }}
               type="button"
             >
               Create account
@@ -756,6 +768,20 @@ export default function App() {
               />
             </label>
 
+            {authMode === "signup" && (
+              <label className="field">
+                <span>Confirm password</span>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  placeholder="Re-enter your password"
+                />
+              </label>
+            )}
+
             <button className="primary" type="submit" disabled={authBusy}>
               {authBusy
                 ? "Working..."
@@ -765,7 +791,7 @@ export default function App() {
             </button>
           </form>
 
-          {authMessage && <p className="error">{authMessage}</p>}
+          {authMessage && <p className="error auth-feedback">{authMessage}</p>}
         </section>
       </main>
     );
