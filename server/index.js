@@ -38,6 +38,7 @@ const allowAnyOrigin = corsOrigins.includes("*");
 const connectSrc = [
   "'self'",
   "https://api.binance.com",
+  "https://api.coinbase.com",
   "https://*.supabase.co",
   "wss://*.supabase.co",
   "https://*.tradingview.com",
@@ -163,26 +164,46 @@ async function getLatestPrice() {
     return priceCache;
   }
 
+  const providers = [
+    {
+      name: "binance",
+      url: "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+      parse(payload) {
+        return parseNumeric(payload?.price);
+      },
+    },
+    {
+      name: "coinbase",
+      url: "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+      parse(payload) {
+        return parseNumeric(payload?.data?.amount);
+      },
+    },
+  ];
+
   try {
-    const response = await fetch(
-      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-    );
+    for (const provider of providers) {
+      const response = await fetch(provider.url);
+      if (!response.ok) {
+        continue;
+      }
 
-    if (!response.ok) {
-      throw new Error(`Price provider status ${response.status}`);
+      const payload = await response.json();
+      const price = provider.parse(payload);
+      if (!Number.isFinite(price) || price <= 0) {
+        continue;
+      }
+
+      priceCache = {
+        value: price,
+        source: provider.name,
+        updatedAt: new Date().toISOString(),
+      };
+
+      return priceCache;
     }
 
-    const payload = await response.json();
-    const price = parseNumeric(payload.price);
-    if (!Number.isFinite(price) || price <= 0) {
-      throw new Error("Invalid price payload");
-    }
-
-    priceCache = {
-      value: price,
-      source: "binance",
-      updatedAt: new Date().toISOString(),
-    };
+    throw new Error("No market provider returned a valid BTC price");
   } catch (error) {
     if (hasValidCachedPrice()) {
       priceCache = {
