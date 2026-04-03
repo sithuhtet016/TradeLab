@@ -99,11 +99,11 @@ begin
   on conflict (user_id) do nothing;
 
   update public.portfolios
-     set balance_usd = round((balance_usd - v_total)::numeric, 2),
-         btc_quantity = round((btc_quantity + v_quantity)::numeric, 8),
+     set balance_usd = round((public.portfolios.balance_usd - v_total)::numeric, 2),
+       btc_quantity = round((public.portfolios.btc_quantity + v_quantity)::numeric, 8),
          updated_at = v_created_at
    where user_id = p_user_id
-     and balance_usd >= v_total;
+     and public.portfolios.balance_usd >= v_total;
 
   if not found then
     raise exception 'Insufficient USD balance';
@@ -180,11 +180,11 @@ begin
   on conflict (user_id) do nothing;
 
   update public.portfolios
-     set balance_usd = round((balance_usd + v_total)::numeric, 2),
-         btc_quantity = round((btc_quantity - v_quantity)::numeric, 8),
+     set balance_usd = round((public.portfolios.balance_usd + v_total)::numeric, 2),
+       btc_quantity = round((public.portfolios.btc_quantity - v_quantity)::numeric, 8),
          updated_at = v_created_at
    where user_id = p_user_id
-     and btc_quantity >= v_quantity;
+     and public.portfolios.btc_quantity >= v_quantity;
 
   if not found then
     raise exception 'Insufficient BTC balance';

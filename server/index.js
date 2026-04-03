@@ -286,10 +286,20 @@ function mapRpcError(error, fallbackMessage) {
   if (!(error instanceof Error)) return fallbackMessage;
 
   if (
-    error.message.includes("function") &&
-    error.message.includes("does not exist")
+    (error.message.includes("function") &&
+      error.message.includes("does not exist")) ||
+    error.message.includes("Could not find the function") ||
+    error.message.includes("schema cache")
   ) {
     return "Trade RPC not installed. Run the SQL setup shown in the frontend warning panel.";
+  }
+
+  if (error.message.includes("permission denied")) {
+    return "Supabase permissions missing. Re-run the SQL setup script in Supabase SQL editor.";
+  }
+
+  if (error.message.includes("is ambiguous")) {
+    return "Supabase trade function is outdated. Re-run server/sql/supabase_setup.sql in Supabase SQL editor.";
   }
 
   if (error.message.includes("Insufficient USD balance")) {

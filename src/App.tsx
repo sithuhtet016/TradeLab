@@ -24,6 +24,8 @@ const INITIAL_PORTFOLIO: Portfolio = {
 };
 
 const STARTING_PRICE = 65000;
+const OTP_CODE_TTL_SECONDS = 10 * 60;
+const OTP_RESEND_COOLDOWN_SECONDS = 60;
 
 const MISSING_ENV_MESSAGE =
   "Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY to your .env file in the project root, then restart the dev server (Vite only reads .env at startup).";
@@ -31,6 +33,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(
   /\/$/,
   "",
 );
+const OFFLINE_DEMO_ENABLED = import.meta.env.VITE_ALLOW_OFFLINE_DEMO === "true";
 
 function apiUrl(path: string): string {
   if (!path.startsWith("/")) return path;
@@ -147,6 +150,45 @@ async function parseErrorMessage(response: Response): Promise<string> {
   return `Request failed with status ${response.status}`;
 }
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isAuthSessionError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("invalid refresh token") ||
+    normalized.includes("refresh token not found") ||
+    normalized.includes("invalid or expired token") ||
+    normalized.includes("jwt") ||
+    normalized.includes("not authorized") ||
+    normalized.includes("session")
+  );
+}
+
+function shouldFallbackToOffline(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  if (isAuthSessionError(message)) return false;
+
+  return (
+    message.includes("failed to fetch") ||
+    message.includes("network") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("status 502") ||
+    message.includes("status 503") ||
+    message.includes("status 504")
+  );
+}
+
+function isRateLimitError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("429") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("rate limit")
+  );
+}
+
 declare global {
   interface Window {
     TradingView?: {
@@ -231,7 +273,7 @@ function TradingViewChart() {
 
 export default function App() {
   const client = supabase;
-  const allowOfflineDemo = import.meta.env.DEV;
+  const allowOfflineDemo = import.meta.env.DEV && OFFLINE_DEMO_ENABLED;
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authBusy, setAuthBusy] = useState(false);
@@ -239,7 +281,24 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [confirmationCode, setConfirmationCode] = useState("");
+  const [pendingSignupEmail, setPendingSignupEmail] = useState<string | null>(
+    null,
+  );
+  const [pendingSignupPassword, setPendingSignupPassword] = useState<
+    string | null
+  >(null);
+  const [codeExpiresAt, setCodeExpiresAt] = useState<number | null>(null);
+  const [codeSecondsLeft, setCodeSecondsLeft] = useState(0);
+  const [resendCooldownUntil, setResendCooldownUntil] = useState<number | null>(
+    null,
+  );
+  const [resendCooldownLeft, setResendCooldownLeft] = useState(0);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [authMessageTone, setAuthMessageTone] = useState<"error" | "success">(
+    "error",
+  );
+  const [confirmingCode, setConfirmingCode] = useState(false);
 
   const [storageMode, setStorageMode] = useState<StorageMode>("api");
   const [portfolio, setPortfolio] = useState<Portfolio>(INITIAL_PORTFOLIO);
@@ -293,6 +352,71 @@ export default function App() {
     [previewQuantity, price],
   );
 
+  function resetSignupVerification() {
+    setPendingSignupEmail(null);
+    setPendingSignupPassword(null);
+    setConfirmationCode("");
+    setCodeExpiresAt(null);
+    setCodeSecondsLeft(0);
+    setResendCooldownUntil(null);
+    setResendCooldownLeft(0);
+    setConfirmingCode(false);
+  }
+
+  const formattedCodeTimeLeft = useMemo(() => {
+    const minutes = Math.floor(codeSecondsLeft / 60);
+    const seconds = codeSecondsLeft % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  }, [codeSecondsLeft]);
+
+  const formattedResendCooldownLeft = useMemo(() => {
+    const minutes = Math.floor(resendCooldownLeft / 60);
+    const seconds = resendCooldownLeft % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  }, [resendCooldownLeft]);
+
+  useEffect(() => {
+    if (!pendingSignupEmail || !codeExpiresAt) {
+      setCodeSecondsLeft(0);
+      return;
+    }
+
+    const tick = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil((codeExpiresAt - Date.now()) / 1000),
+      );
+      setCodeSecondsLeft(seconds);
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pendingSignupEmail, codeExpiresAt]);
+
+  useEffect(() => {
+    if (!resendCooldownUntil) {
+      setResendCooldownLeft(0);
+      return;
+    }
+
+    const tick = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil((resendCooldownUntil - Date.now()) / 1000),
+      );
+      setResendCooldownLeft(seconds);
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [resendCooldownUntil]);
+
   useEffect(() => {
     if (!client) {
       setAuthLoading(false);
@@ -303,8 +427,22 @@ export default function App() {
 
     client.auth
       .getSession()
-      .then(({ data }) => {
+      .then(async ({ data, error }) => {
         if (!active) return;
+        if (error) {
+          if (isAuthSessionError(error.message)) {
+            await client.auth.signOut();
+            setSession(null);
+            setAuthMessageTone("error");
+            setAuthMessage("Session expired. Please sign in again.");
+            return;
+          }
+
+          setAuthMessageTone("error");
+          setAuthMessage(error.message);
+          return;
+        }
+
         setSession(data.session ?? null);
       })
       .finally(() => {
@@ -315,6 +453,9 @@ export default function App() {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
+      if (nextSession) {
+        resetSignupVerification();
+      }
     });
 
     return () => {
@@ -425,11 +566,16 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          if (allowOfflineDemo) {
+          const message = toErrorMessage(error);
+          if (allowOfflineDemo && shouldFallbackToOffline(error)) {
             setStorageMode("local");
             setPortfolio(readLocalPortfolio(activeUserId));
             setTrades(readLocalTrades(activeUserId));
             setPortfolioError("Running in offline demo mode.");
+          } else if (isAuthSessionError(message)) {
+            setStorageMode("api");
+            setPortfolioError("Session expired. Please sign in again.");
+            void client?.auth.signOut();
           } else {
             setStorageMode("api");
             setPortfolioError(
@@ -452,7 +598,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [allowOfflineDemo, session, userId]);
+  }, [allowOfflineDemo, client, session, userId]);
 
   function syncFromQuantity(raw: string) {
     setQuantityInput(raw);
@@ -524,6 +670,7 @@ export default function App() {
     if (!client) return;
 
     setAuthBusy(true);
+    setAuthMessageTone("error");
     setAuthMessage(null);
 
     try {
@@ -533,14 +680,34 @@ export default function App() {
           return;
         }
 
-        const { data, error } = await client.auth.signUp({ email, password });
+        if (resendCooldownLeft > 0) {
+          setAuthMessageTone("error");
+          setAuthMessage(
+            `Please wait ${formattedResendCooldownLeft} before requesting another code.`,
+          );
+          return;
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const { error } = await client.auth.signInWithOtp({
+          email: normalizedEmail,
+          options: {
+            shouldCreateUser: true,
+          },
+        });
+
         if (error) throw error;
 
-        if (!data.session) {
-          setAuthMessage(
-            "Signup succeeded. Check your email confirmation settings or sign in now.",
-          );
-        }
+        setPendingSignupEmail(normalizedEmail);
+        setPendingSignupPassword(password);
+        setConfirmationCode("");
+        setCodeExpiresAt(Date.now() + OTP_CODE_TTL_SECONDS * 1000);
+        setResendCooldownUntil(Date.now() + OTP_RESEND_COOLDOWN_SECONDS * 1000);
+        setAuthMessageTone("success");
+        setAuthMessage(
+          "A confirmation code has been sent to your email. Enter it below to complete account creation.",
+        );
       } else {
         const { error } = await client.auth.signInWithPassword({
           email,
@@ -549,11 +716,74 @@ export default function App() {
         if (error) throw error;
       }
     } catch (error) {
+      const message = toErrorMessage(error);
+      if (isRateLimitError(message)) {
+        setResendCooldownUntil(Date.now() + OTP_RESEND_COOLDOWN_SECONDS * 1000);
+        setAuthMessageTone("error");
+        setAuthMessage(
+          `Too many code requests. Please wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds and try again.`,
+        );
+        return;
+      }
+
+      setAuthMessageTone("error");
       setAuthMessage(
         error instanceof Error ? error.message : "Auth request failed.",
       );
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  async function handleConfirmSignupCode() {
+    if (!client || !pendingSignupEmail) return;
+
+    const token = confirmationCode.trim();
+    if (!token) {
+      setAuthMessageTone("error");
+      setAuthMessage("Enter the confirmation code sent to your email.");
+      return;
+    }
+
+    if (codeSecondsLeft <= 0) {
+      setAuthMessageTone("error");
+      setAuthMessage("Confirmation code expired. Please resend a new code.");
+      return;
+    }
+
+    setConfirmingCode(true);
+    setAuthMessageTone("error");
+    setAuthMessage(null);
+
+    try {
+      const { data, error } = await client.auth.verifyOtp({
+        email: pendingSignupEmail,
+        token,
+        type: "email",
+      });
+
+      if (error) throw error;
+
+      if (pendingSignupPassword && data.session) {
+        const { error: updateError } = await client.auth.updateUser({
+          password: pendingSignupPassword,
+        });
+
+        if (updateError) throw updateError;
+      }
+
+      setAuthMessageTone("success");
+      setAuthMessage("Email verified. Account setup completed successfully.");
+      resetSignupVerification();
+    } catch (error) {
+      setAuthMessageTone("error");
+      setAuthMessage(
+        error instanceof Error
+          ? `Code verification failed: ${error.message}`
+          : "Code verification failed. Please try again.",
+      );
+    } finally {
+      setConfirmingCode(false);
     }
   }
 
@@ -663,7 +893,13 @@ export default function App() {
         `${tradeType} executed at $${price.toFixed(2)}. Balance: $${refreshedPortfolio.balanceUsd.toFixed(2)}. P&L: ${refreshedPnl >= 0 ? "+" : ""}$${refreshedPnl.toFixed(2)}.`,
       );
     } catch (error) {
-      if (allowOfflineDemo) {
+      const message = toErrorMessage(error);
+
+      if (isAuthSessionError(message)) {
+        setStorageMode("api");
+        setTradeMessage("Session expired. Please sign in again.");
+        void client?.auth.signOut();
+      } else if (allowOfflineDemo && shouldFallbackToOffline(error)) {
         const nextTrades = [nextTrade, ...trades].slice(0, 25);
         setStorageMode("local");
         setPortfolio(nextPortfolio);
@@ -726,6 +962,8 @@ export default function App() {
               className={authMode === "signin" ? "active" : ""}
               onClick={() => {
                 setAuthMode("signin");
+                resetSignupVerification();
+                setAuthMessageTone("error");
                 setAuthMessage(null);
               }}
               type="button"
@@ -736,6 +974,8 @@ export default function App() {
               className={authMode === "signup" ? "active" : ""}
               onClick={() => {
                 setAuthMode("signup");
+                resetSignupVerification();
+                setAuthMessageTone("error");
                 setAuthMessage(null);
               }}
               type="button"
@@ -782,16 +1022,77 @@ export default function App() {
               </label>
             )}
 
-            <button className="primary" type="submit" disabled={authBusy}>
+            <button
+              className="primary"
+              type="submit"
+              disabled={
+                authBusy || (authMode === "signup" && resendCooldownLeft > 0)
+              }
+            >
               {authBusy
-                ? "Working..."
+                ? authMode === "signup"
+                  ? "Sending code..."
+                  : "Working..."
                 : authMode === "signin"
                   ? "Sign in"
-                  : "Create account"}
+                  : resendCooldownLeft > 0
+                    ? `Try again in ${formattedResendCooldownLeft}`
+                    : pendingSignupEmail
+                      ? "Resend confirmation code"
+                      : "Create account"}
             </button>
+            {authMode === "signup" && resendCooldownLeft > 0 && (
+              <p className="muted">
+                Please wait {formattedResendCooldownLeft} before requesting a
+                new code.
+              </p>
+            )}
           </form>
 
-          {authMessage && <p className="error auth-feedback">{authMessage}</p>}
+          {authMode === "signup" && pendingSignupEmail && (
+            <div className="stack auth-verify-block">
+              <label className="field">
+                <span>Confirmation code</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={confirmationCode}
+                  onChange={(event) => setConfirmationCode(event.target.value)}
+                  placeholder="Enter the code from your email"
+                />
+              </label>
+
+              <button
+                className="primary"
+                type="button"
+                disabled={confirmingCode || codeSecondsLeft <= 0}
+                onClick={() => {
+                  void handleConfirmSignupCode();
+                }}
+              >
+                {confirmingCode ? "Verifying code..." : "Verify code"}
+              </button>
+
+              <p className="muted">
+                Code sent to {pendingSignupEmail} • expires in{" "}
+                {formattedCodeTimeLeft}
+              </p>
+              {codeSecondsLeft <= 0 && (
+                <p className="warning">
+                  Code expired. Press resend confirmation code.
+                </p>
+              )}
+            </div>
+          )}
+
+          {authMessage && (
+            <p
+              className={`${authMessageTone === "success" ? "success" : "error"} auth-feedback`}
+            >
+              {authMessage}
+            </p>
+          )}
         </section>
       </main>
     );

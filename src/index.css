@@ -45,10 +45,16 @@ input {
 
 .auth-shell {
   max-width: 540px;
+  width: min(540px, 100%);
   display: grid;
   gap: 16px;
-  min-height: 100vh;
+  min-height: 100dvh;
   align-content: center;
+  margin-inline: auto;
+}
+
+.auth-shell > section {
+  width: 100%;
 }
 
 .dashboard-shell {
@@ -82,6 +88,14 @@ input {
   color: #7d1900;
   background: #fff4ed;
   border: 1px solid #ffceb8;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.success {
+  color: #0f5c29;
+  background: #ecfff1;
+  border: 1px solid #b8e7c3;
   border-radius: 12px;
   padding: 10px 12px;
 }
@@ -145,6 +159,11 @@ input {
   display: grid;
   gap: 12px;
   margin-top: 12px;
+}
+
+.auth-verify-block {
+  border-top: 1px dashed #cdd8e8;
+  padding-top: 12px;
 }
 
 .chart-head {
@@ -269,7 +288,16 @@ input {
   }
 
   .auth-shell {
-    min-height: auto;
-    padding-top: 8px;
+    min-height: 100dvh;
+    padding-top: 16px;
+    padding-bottom: 16px;
+    gap: 12px;
+    align-content: center;
+  }
+
+  .hero-card,
+  .card {
+    padding: 14px;
+    border-radius: 14px;
   }
 }
